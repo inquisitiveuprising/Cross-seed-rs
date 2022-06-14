@@ -1,0 +1,7 @@
+/target
+.vscode
+
+# Debug related directories that we don't want included
+/torrents
+/output
+config.toml
