@@ -1,9 +1,7 @@
-use std::sync::Arc;
-use std::slice::Iter;
-
 use figment::{Provider, Metadata, Profile, Error};
 use figment::value::{Map, Dict, Value, Tag};
-use serde::Deserialize;
+
+use crate::config::ArgumentTree;
 
 /// A provider that fetches its data from a given URL.
 pub struct CliProvider {
@@ -22,21 +20,15 @@ impl CliProvider {
 }
 
 impl Provider for CliProvider {
-    /// Returns metadata with kind `Network`, custom source `self.url`,
-    /// and interpolator that returns a URL of `url/a/b/c` for key `a.b.c`.
+    /// Returns metadata with kind `Cli Flags`, custom source is the 
+    /// command line arguments separated by spaces.
     fn metadata(&self) -> Metadata {
         let args = &self.args;
-        Metadata::named("CLI Flags")
+        Metadata::named("Cli Flags")
             .source(args.join(" "))
-            //.source(args.map(|args| args.collect::<Vec<_>>().join(" ")).unwrap_or(String::default()))
-            /* .interpolater(move |profile, keys| match profile.is_custom() {
-                true => format!("{}/{}/{}", url, profile, keys.join("/")),
-                false => format!("{}/{}", url, keys.join("/")),
-            }) */
     }
 
-    /// Fetches the data from `self.url`. Note that `Dict`, `Map`, and
-    /// `Profile` are `Deserialize`, so we can deserialized to them.
+    /// Parses the command line arguments into a `Map` and `Value`s.
     fn data(&self) -> Result<Map<Profile, Dict>, Error> {
         // Parse a `Value` from a `String` 
         fn parse_from_string(string: &String) -> Value {
@@ -50,98 +42,36 @@ impl Provider for CliProvider {
             }
         }
 
-        fn parse_keys(keys: &mut Iter<&str>, dict: &Dict, vals: &Vec<String>) -> Value {
-            let key = keys.next();
-
-            match key {
-                None => {
-                    if vals.len() == 1 {
-                        parse_from_string(&vals[0])
-                    } else {
-                        let mut values = Vec::new();
-                        for val in vals.iter() {
-                            values.push(parse_from_string(val));
-                        }
-    
-                        Value::Array(Tag::Default, values)
-                    }
-                },
-                Some(key) => {
-                    let key = key.to_string();
-                    println!("Key is {}", key);
-
-                    println!("Dict is {:?}", dict);
-
-                    match dict.get(&key) {
-                        Some(val) => {
-                            println!("Val is {:?}", val);
-
-                            match val.as_dict() {
-                                Some(dict) => parse_keys(keys, &dict, vals),
-                                None => panic!("Expected a `Dict`, got some other value"),
-                            }
-                            //parse_keys(keys, &dict, vals)
-                        },
-                        None => {
-                            let mut current_dict = Dict::new();
-                            let val = parse_keys(keys, &current_dict, vals);
-
-                            current_dict.insert(key.to_string(), val);
-
-                            Value::from(current_dict)
-                        }
-                    }
-                    /* let mut current_dict = Dict::new();
-                    let val = parse_keys(keys, &current_dict, vals);
-
-                    current_dict.insert(key.to_string(), val);
-
-                    Value::from(current_dict) */
-                }
-            }
-        }
-
         fn parse_cli(args: &Vec<std::string::String>)-> Result<Dict, Error> {
-            let (args, argv) = argmap::parse(args.iter());
+            // TODO: Parse _args as booleans
+            let (_args, argv) = argmap::parse(args.iter());
 
-            let mut dict = Dict::new();
-
+            let mut tree = ArgumentTree::new();
             for (key, vals) in argv {
                 let len = vals.len();
                 if len == 0 {
                     continue;
                 }
 
-                let key_vec = key.split(".").collect::<Vec<_>>();
-                if key_vec.len() > 1 {
-                    let mut key_iter = key_vec.iter();
-
-                    //let key = key_iter.next();
-                    let key = key_vec.first();
-                    let val = parse_keys(&mut key_iter, &dict, &vals);
-
-                    println!("Final val is {:?}", val);
-
-                    dict.insert(key.unwrap().to_string(), val);
-                } else {
-                    if len == 1 {
-                        dict.insert(key, parse_from_string(&vals[0]));
-                    } else {
-                        let mut values = Vec::new();
-                        for val in &vals {
-                            values.push(parse_from_string(val));
+                // Parse the string argument values into a `Value`
+                let val = match len {
+                    1 => parse_from_string(&vals[0]),
+                    _ => {
+                        let mut vec = Vec::new();
+                        for val in vals {
+                            vec.push(parse_from_string(&val));
                         }
-    
-                        dict.insert(key, Value::Array(Tag::Default, values));
-                    }
-                }
+                        Value::from(vec)
+                    },
+                };
 
-                println!("Dict: {:?}", dict);
+                // Separate the key into its parts and then insert it into the tree
+                let key_vec = key.split(".").map(|s| s.to_string()).collect::<Vec<_>>();
+                let mut key_iter = key_vec.iter();
+                tree.insert(&mut key_iter, val);
             }
 
-            
-
-            Ok(dict)
+            Ok(tree.to_dict())
         }
 
         match &self.profile {
