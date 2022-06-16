@@ -2,6 +2,6 @@
 .vscode
 
 # Debug related directories that we don't want included
-/torrents
+/torrents*
 /output
 config.toml

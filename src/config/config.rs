@@ -49,9 +49,9 @@ impl Config {
         // TODO: Figure out priority
         // Merge the config files
         let figment = Figment::new()
-            .join(Toml::file(format!("{}.toml", path)))
+            .join(CliProvider::new())
             .join(Env::prefixed("CROSS_SEED_"))
-            .join(CliProvider::new());
+            .join(Toml::file(format!("{}.toml", path)));
 
         let mut config: Config = figment.extract().unwrap();
 

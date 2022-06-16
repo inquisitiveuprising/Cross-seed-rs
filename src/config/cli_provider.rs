@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::slice::Iter;
 
 use figment::{Provider, Metadata, Profile, Error};
 use figment::value::{Map, Dict, Value, Tag};
@@ -49,7 +50,58 @@ impl Provider for CliProvider {
             }
         }
 
-        fn fetch<'a, T: Deserialize<'a>>(args: &Vec<std::string::String>) -> Result<T, Error> {
+        fn parse_keys(keys: &mut Iter<&str>, dict: &Dict, vals: &Vec<String>) -> Value {
+            let key = keys.next();
+
+            match key {
+                None => {
+                    if vals.len() == 1 {
+                        parse_from_string(&vals[0])
+                    } else {
+                        let mut values = Vec::new();
+                        for val in vals.iter() {
+                            values.push(parse_from_string(val));
+                        }
+    
+                        Value::Array(Tag::Default, values)
+                    }
+                },
+                Some(key) => {
+                    let key = key.to_string();
+                    println!("Key is {}", key);
+
+                    println!("Dict is {:?}", dict);
+
+                    match dict.get(&key) {
+                        Some(val) => {
+                            println!("Val is {:?}", val);
+
+                            match val.as_dict() {
+                                Some(dict) => parse_keys(keys, &dict, vals),
+                                None => panic!("Expected a `Dict`, got some other value"),
+                            }
+                            //parse_keys(keys, &dict, vals)
+                        },
+                        None => {
+                            let mut current_dict = Dict::new();
+                            let val = parse_keys(keys, &current_dict, vals);
+
+                            current_dict.insert(key.to_string(), val);
+
+                            Value::from(current_dict)
+                        }
+                    }
+                    /* let mut current_dict = Dict::new();
+                    let val = parse_keys(keys, &current_dict, vals);
+
+                    current_dict.insert(key.to_string(), val);
+
+                    Value::from(current_dict) */
+                }
+            }
+        }
+
+        fn parse_cli(args: &Vec<std::string::String>)-> Result<Dict, Error> {
             let (args, argv) = argmap::parse(args.iter());
 
             let mut dict = Dict::new();
@@ -60,35 +112,46 @@ impl Provider for CliProvider {
                     continue;
                 }
 
-                let key_vec: Vec<&str> = key.split(".").collect();
-                for key in key_vec.iter() {
-                    dict.insert(key.to_owned(), Value::from(key.to_owned()));
-                }
+                let key_vec = key.split(".").collect::<Vec<_>>();
+                if key_vec.len() > 1 {
+                    let mut key_iter = key_vec.iter();
 
-                if len == 1 {
-                    dict.insert(key, parse_from_string(&vals[0]));
+                    //let key = key_iter.next();
+                    let key = key_vec.first();
+                    let val = parse_keys(&mut key_iter, &dict, &vals);
+
+                    println!("Final val is {:?}", val);
+
+                    dict.insert(key.unwrap().to_string(), val);
                 } else {
-                    let mut values = Vec::new();
-                    for val in &vals {
-                        values.push(parse_from_string(val));
+                    if len == 1 {
+                        dict.insert(key, parse_from_string(&vals[0]));
+                    } else {
+                        let mut values = Vec::new();
+                        for val in &vals {
+                            values.push(parse_from_string(val));
+                        }
+    
+                        dict.insert(key, Value::Array(Tag::Default, values));
                     }
-
-                    dict.insert(key, Value::Array(Tag::Default, values));
                 }
+
+                println!("Dict: {:?}", dict);
             }
 
-            Ok(T::deserialize(dict).unwrap())
+            
 
-            //Ok(T::deserialize(args.unwrap_or(&std::env::args()))?)
-
-            //Profile::default()
+            Ok(dict)
         }
 
         match &self.profile {
             // Don't nest: `fetch` into a `Dict`.
-            Some(profile) => Ok(profile.collect(fetch(&self.args)?)),
-            // Nest: `fetch` into a `Map<Profile, Dict>`.
-            None => fetch(&self.args),
+            Some(profile) => Ok(profile.collect(parse_cli(&self.args)?)),
+            None => {
+                let mut map = Map::new();
+                map.insert(Profile::default(), parse_cli(&self.args)?);
+                Ok(map)   
+            }
         }
     }
 }
