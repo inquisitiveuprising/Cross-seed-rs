@@ -1,13 +1,20 @@
 mod config;
+mod torznab;
 
 use config::Config;
+use tracing::{info, Level, debug};
 
 use std::path::{Path, PathBuf};
 use std::error::Error;
 
 use lava_torrent::torrent::v1::Torrent;
 
-use torznab::Client as TorznabClient;
+use crate::torznab::{GenericSearchParameters, SearchFunction};
+use crate::torznab::search_parameters::{GenericSearchParametersBuilder, MovieSearchParametersBuilder};
+
+use tokio::sync::RwLock;
+
+use std::sync::Arc;
 
 fn read_torrents(path: &Path) -> Result<Vec<PathBuf>, Box<dyn Error>> {
     let mut torrents = Vec::new();
@@ -28,48 +35,67 @@ fn read_torrents(path: &Path) -> Result<Vec<PathBuf>, Box<dyn Error>> {
     return Ok(torrents);
 }
 
-fn main() {
+#[tokio::main]
+async fn main() {
+    let subscriber = tracing_subscriber::fmt()
+        .with_max_level(Level::INFO)
+        .finish();
+
+    tracing::subscriber::set_global_default(subscriber).expect("Failed to set global default log subscriber");
+
     // Get config and debug the torrents
-    let config = Config::new();//.expect("Failed to get config");
-    println!("Searching torrents in: {}", config.torrents_path_str());
+    let config = Config::new();
+    info!("Searching torrents in: {}", config.torrents_path_str());
 
-    println!("Searching {} trackers: ", config.indexers.len());
-    for indexer in config.indexers.iter() {
-        println!("  {}: {}", indexer.name, indexer.url);
+    let mut indexers = config.indexers.clone();
+
+    // Create torznab clients for each indexer.
+    for indexer in indexers.iter_mut() {
+        indexer.create_client().await.unwrap();
     }
 
-    let torrents = read_torrents(config.torrents_path()).unwrap();
+    // Log the trackers
+    info!("Searching {} trackers: ", indexers.len());
+    for indexer in indexers.iter() {
+        info!("  {}: {}", indexer.name, indexer.url);
+        debug!("    Can Search: {:?}", indexer.client.as_ref().unwrap().capabilities.searching_capabilities);
+    }
 
-    for torrent_path in torrents.iter() {
-        let torrent = Torrent::read_from_file(torrent_path).unwrap();
-        println!("{}:", torrent.name);
+    let torrent_files = read_torrents(config.torrents_path()).unwrap();
+    info!("Found {} torrents", torrent_files.len());
 
-        /* for indexer in config.indexers.iter() {
-            if indexer.enabled {
-                let client = TorznabClient::new(indexer.url.clone());
-                let results = client.search(&torrent).unwrap();
-                println!("{}", results);
-            }
-        } */
-        //TorznabClient
+    //panic!("rhfhujergfre");
 
-        /*if let Some(announce) = torrent.announce {
-            println!("  Announce: {}", announce);
-        }
-        if let Some(announce_list) = torrent.announce_list {
-            println!("  Announce list:");
-            for announce in announce_list {
-                for ann in announce {
-                    println!("    {}", ann);
+    // Convert the indexers to be async friendly.
+    let mut indexers = indexers.iter()
+        .map(|indexer| Arc::new(RwLock::new(indexer.clone())))
+        .collect::<Vec<_>>();
+
+    let mut indexer_handles = vec![];
+
+    for torrent_path in torrent_files.iter() {
+        let torrent = Arc::new(Torrent::read_from_file(torrent_path).unwrap());
+        info!("{}:", torrent.name);
+
+        for indexer in indexers.iter() {
+            let mut indexer = Arc::clone(indexer);
+            let torrent = Arc::clone(&torrent);
+            indexer_handles.push(tokio::spawn(async move {
+                let lock = indexer.read().await;
+                match &lock.client {
+                    Some(client) => {
+                        let generic = GenericSearchParametersBuilder::new()
+                            .query(torrent.name.clone())
+                            .build();
+                        client.search(SearchFunction::Search, generic).await.unwrap();
+                    },
+                    None => {
+                        panic!("idfk");
+                    }
                 }
-            }
+            }));
         }
-        println!("  Files:");
-        
-        if let Some(files) = torrent.files {
-            for file in files.iter() {
-                println!("    {}", file.path.to_str().unwrap());
-            }
-        } */
     }
+
+    futures::future::join_all(indexer_handles).await;
 }

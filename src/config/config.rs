@@ -5,6 +5,8 @@ use std::collections::HashMap;
 use figment::{Figment, providers::{Format, Toml, Env}};
 use figment::value::Value as FigmentValue;
 
+use crate::torznab::TorznabClient;
+
 use super::CliProvider;
 
 #[derive(Deserialize, Serialize)]
@@ -26,13 +28,26 @@ pub struct Config {
     pub indexers: Vec<Indexer>,
 }
 
-#[derive(Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Indexer {
     #[serde(skip_deserializing)]
     pub name: String,
     pub enabled: Option<bool>,
     pub url: String,
     pub api_key: String,
+
+    #[serde(skip)]
+    pub client: Option<TorznabClient>,
+}
+
+impl Indexer {
+    pub async fn create_client(&mut self) -> Result<&TorznabClient, crate::torznab::ClientError> {
+        if self.client.is_none() {
+            self.client = Some(TorznabClient::new(self.name.clone(), &self.url, &self.api_key).await?);
+        }
+
+        Ok(self.client.as_ref().unwrap())
+    }
 }
 
 // Allow dead code for functions. We should probably remove this later on.
